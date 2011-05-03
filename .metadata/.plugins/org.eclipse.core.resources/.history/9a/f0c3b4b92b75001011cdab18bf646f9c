@@ -1,0 +1,154 @@
+import java.security.InvalidKeyException;
+import java.security.Key;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
+import javax.crypto.Cipher;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+
+/**
+ * A Class containing a bunch of static methods to help reduce code duplication
+ * among various classes
+ * 
+ * @author Lynden Shields & Abdulrahman Almassan
+ * 
+ */
+public class Helpers {
+
+	/**
+	 * Function written to concatenate two byte arrays into a new array
+	 * 
+	 * @param arr1
+	 * @param arr2
+	 * @return new array of the size of the two input arrays with the data of
+	 *         the first then the data of the second
+	 */
+	static byte[] concatByteArray(byte[] arr1, byte[] arr2) {
+		byte[] toReturn = new byte[arr1.length + arr2.length];
+		System.arraycopy(arr1, 0, toReturn, 0, arr1.length);
+		System.arraycopy(arr2, 0, toReturn, arr1.length, arr2.length);
+
+		return toReturn;
+	}
+
+	static byte[] generateHMAC(Key key, byte[] bytes) {
+		try {
+			Mac mac = Mac.getInstance("HmacMD5");
+			mac.init(key);
+			return mac.doFinal(bytes);
+		} catch (InvalidKeyException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		} catch (NoSuchAlgorithmException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		} catch (IllegalStateException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		}
+		return null;
+	}
+
+	/**
+	 * Function to encrypt the packet data
+	 * 
+	 * @param data
+	 * @param sharedSecretKey
+	 * @return encrypted message
+	 */
+	static byte[] encrypt(Key key, byte[] data) {
+		byte[] encrypted = null;
+
+		try {
+			// Initialise cipher
+			Cipher cipher = Cipher.getInstance("Blowfish");
+			cipher.init(Cipher.ENCRYPT_MODE, key);
+			// Run cipher
+			encrypted = cipher.doFinal(data);
+		} catch (Exception e) {
+			// This shouldn't happen
+			e.printStackTrace();
+			System.err.println("Unable to encrypt");
+			System.exit(1);
+		}
+
+		return encrypted;
+	}
+
+	/**
+	 * Function to decrypt the packet data
+	 * 
+	 * @param data
+	 * @param key
+	 * @return decrypted packet data
+	 */
+	static byte[] decrypt(Key key, byte[] data) {
+		byte[] decrypted = null;
+		try {
+			// Initialise cipher
+			Cipher cipher = Cipher.getInstance("Blowfish");
+			cipher.init(Cipher.DECRYPT_MODE, key);
+			// decrypt
+			decrypted = cipher.doFinal(data);
+		} catch (Exception e) {
+			// This should never happen
+			e.printStackTrace();
+			System.err.println("Unable to decrypt");
+			System.exit(1);
+		}
+		return decrypted;
+	}
+
+	public static byte[] toX509(byte[] encoded) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	/**
+	 * Function created for debugging purposes. Just creates a string of int
+	 * values from a byte array
+	 * 
+	 * @param arr
+	 * @return string of int values separated by comma
+	 */
+	static String printBytes(byte[] arr) {
+		String toReturn = new String();
+		for (int i = 0; i < arr.length; i++) {
+			toReturn += "" + (int) arr[i] + ",";
+		}
+		return toReturn;
+	}
+
+	/**
+	 * This function generates a Blowfish SecretKey based on MD5 hashing the
+	 * secret
+	 * 
+	 * @param secret
+	 *            The secret to use as basis for key
+	 * @return The secret key to use for encryption etc
+	 */
+	static SecretKey generateKey(byte[] secret) {
+		SecretKey key = null;
+		try {
+			// hash shared secret, generate Blowfish key from that.
+			MessageDigest md = MessageDigest.getInstance("MD5");
+			key = new SecretKeySpec(md.digest(secret), "Blowfish");
+		} catch (NoSuchAlgorithmException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		}
+
+		return key;
+	}
+	
+	static boolean CheckHMAC(byte[] incomingHMAC, Key key, byte[] message){
+		
+	}
+
+}

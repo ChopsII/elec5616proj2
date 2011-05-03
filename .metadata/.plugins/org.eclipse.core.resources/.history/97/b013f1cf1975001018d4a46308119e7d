@@ -1,0 +1,586 @@
+/***********************************************************************************
+ * ELEC5616
+ * Computer and Network Security, The University of Sydney
+ *
+ * PROJECT:         StealthNet
+ * FILENAME:        StealthNetComms.java
+ * AUTHORS:         Stephen Gould, Matt Barrie, Ryan Junee
+ * DESCRIPTION:     Implementation of StealthNet Communications for ELEC5616
+ *                  programming assignment.
+ *                  This code has been written for the purposes of teaching
+ *                  cryptography and computer security. It is to be used as
+ *                  a demonstration only. No attempt has been made to optimise
+ *                  the source code.
+ * VERSION:         1.0
+ * IMPLEMENTS:      initiateSession();
+ *                  acceptSession();
+ *                  terminateSession();
+ *                  sendPacket();
+ *                  recvPacket();
+ *                  recvReady();
+ *
+ * REVISION HISTORY:
+ *
+ **********************************************************************************/
+
+/* Import Libraries **********************************************************/
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.Socket;
+import java.security.AlgorithmParameterGenerator;
+import java.security.AlgorithmParameters;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.InvalidKeyException;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
+import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.InvalidParameterSpecException;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Arrays;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyAgreement;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.interfaces.DHPublicKey;
+import javax.crypto.spec.DHParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
+/* StealthNetComms class *****************************************************/
+
+public class StealthNetComms {
+	public static final String SERVERNAME = "localhost";
+	public static final int SERVERPORT = 5616;
+
+	private Socket commsSocket; // communications socket
+	private PrintWriter dataOut; // output data stream
+	private BufferedReader dataIn; // input data stream
+
+	private SecretKey sharedSecretKey; // Blowfish key based on DH shared secret
+
+	private SecureRandom myRandom; // PRNG for nonces sent
+	private SecureRandom theirRandom; // PRNG for nonces received
+	private byte[] theirCurrentNonce; // The current nonce expected
+
+	public StealthNetComms() {
+		commsSocket = null;
+		dataIn = null;
+		dataOut = null;
+
+		// We need to initialise the PRNG on creation of object
+		try {
+			myRandom = SecureRandom.getInstance("SHA1PRNG");
+			theirRandom = SecureRandom.getInstance("SHA1PRNG");
+		} catch (NoSuchAlgorithmException e) {
+			e.printStackTrace();
+			System.out.println("SHA1PRNG not available");
+			System.exit(1);
+		}
+	}
+
+	protected void finalize() throws IOException {
+		if (dataOut != null)
+			dataOut.close();
+		if (dataIn != null)
+			dataIn.close();
+		if (commsSocket != null)
+			commsSocket.close();
+	}
+
+	public boolean initiateSession(Socket socket) {
+		try {
+			commsSocket = socket;
+			dataOut = new PrintWriter(commsSocket.getOutputStream(), true);
+			dataIn = new BufferedReader(new InputStreamReader(commsSocket
+					.getInputStream()));
+
+			// Do the key exchange
+			doKeyExchangeAlice();
+
+		} catch (Exception e) {
+			System.err.println("Connection terminated.");
+			System.exit(1);
+		}
+
+		return true;
+	}
+
+	/**
+	 * This function executes the entire key exchange from the connection
+	 * initiator's point of view
+	 * 
+	 * @throws InvalidKeyException
+	 * @throws NoSuchAlgorithmException
+	 * @throws InvalidParameterSpecException
+	 * @throws InvalidAlgorithmParameterException
+	 * @throws IOException
+	 * @throws InvalidKeySpecException
+	 */
+	private void doKeyExchangeAlice() throws InvalidKeyException,
+			NoSuchAlgorithmException, InvalidParameterSpecException,
+			InvalidAlgorithmParameterException, IOException,
+			InvalidKeySpecException {
+
+		// Here we are 'Alice'
+
+		// Generate DH key exchange parameters
+		KeyPair aliceKP = genDHParamsAndKP(null);
+
+		// create and initialise DH KeyAgreement object
+		KeyAgreement aliceKeyAgree = KeyAgreement.getInstance("DH");
+		aliceKeyAgree.init(aliceKP.getPrivate());
+
+		// package and send public key to bob
+		byte[] alicePubKEnc = aliceKP.getPublic().getEncoded();
+		StealthNetPacket aPK = new StealthNetPacket(
+				StealthNetPacket.CMD_KEYEXCHANGE, alicePubKEnc);
+		sendPacket(aPK);
+
+		// Alice waits for Bob's package -- no timeout
+		while (!recvReady())
+			;
+
+		// Alice receive bobs 'package'
+		StealthNetPacket bPK = recvPacket();
+
+		// Compute bob's public key from encoded packet
+		KeyFactory aliceKeyFac = KeyFactory.getInstance("DH");
+		X509EncodedKeySpec x509KeySpec = new X509EncodedKeySpec(bPK.data);
+		DHPublicKey bobPK = (DHPublicKey) aliceKeyFac
+				.generatePublic(x509KeySpec);
+
+		// Compute shared secret
+		aliceKeyAgree.doPhase(bobPK, true);
+
+		// Compute a shared encryption key from the shared secret
+		sharedSecretKey = generateKey(aliceKeyAgree.generateSecret());
+
+		// Initialise the PRNGs with the secret key and alice or bob is added to
+		// differentiate between the two sets of nonces so that nonces used by
+		// alice will not be used by bob
+		myRandom.setSeed(Helpers.concatByteArray(sharedSecretKey.getEncoded(), "alice"
+				.getBytes()));
+		theirRandom.setSeed(concatByteArray(sharedSecretKey.getEncoded(), "bob"
+				.getBytes()));
+
+		// Calculate bob's first nonce to be expected
+		theirCurrentNonce = new byte[6];
+		theirRandom.nextBytes(theirCurrentNonce);
+
+	}
+
+	public boolean acceptSession(Socket socket) {
+		try {
+			commsSocket = socket;
+			dataOut = new PrintWriter(commsSocket.getOutputStream(), true);
+			dataIn = new BufferedReader(new InputStreamReader(commsSocket
+					.getInputStream()));
+
+			// do the key exchange from the acceptors point of view
+			doKeyExchangeBob();
+
+		} catch (Exception e) {
+			System.err.println("Connection terminated.");
+			System.exit(1);
+		}
+
+		return true;
+	}
+
+	/**
+	 * This function performs all of the key exchange etc from the acceptor of
+	 * the session's point of view
+	 * 
+	 * @throws IOException
+	 * @throws NoSuchAlgorithmException
+	 * @throws InvalidKeySpecException
+	 * @throws InvalidKeyException
+	 * @throws InvalidParameterSpecException
+	 * @throws InvalidAlgorithmParameterException
+	 */
+	private void doKeyExchangeBob() throws IOException,
+			NoSuchAlgorithmException, InvalidKeySpecException,
+			InvalidKeyException, InvalidParameterSpecException,
+			InvalidAlgorithmParameterException {
+		// Here we are 'Bob'
+
+		// Receive Alice's encoded public key
+		while (!recvReady())
+			;
+		StealthNetPacket aPK = recvPacket();
+
+		// Decode Alice's public key
+		KeyFactory bobKeyFac = KeyFactory.getInstance("DH");
+		X509EncodedKeySpec x509KeySpec = new X509EncodedKeySpec(aPK.data);
+		PublicKey alicePK = bobKeyFac.generatePublic(x509KeySpec);
+
+		// Generate own key pair
+		KeyPair bobKP = genDHParamsAndKP((DHPublicKey) alicePK);
+
+		// Init Bob's key agreement
+		KeyAgreement bobKeyAgree = KeyAgreement.getInstance("DH");
+		bobKeyAgree.init(bobKP.getPrivate());
+
+		// send Bob's public key back to Alice
+		StealthNetPacket bobPK = new StealthNetPacket(
+				StealthNetPacket.CMD_KEYEXCHANGE, bobKP.getPublic()
+						.getEncoded());
+		sendPacket(bobPK);
+
+		// calculate shared secret
+		bobKeyAgree.doPhase(alicePK, true);
+		byte[] sharedSecret = bobKeyAgree.generateSecret();
+
+		// Generate shared encryption key
+		sharedSecretKey = generateKey(sharedSecret);
+
+		// Initialise Alice and bob's PRNGs with the shared secret key and short
+		// string to ensure different seed
+		myRandom.setSeed(concatByteArray(sharedSecretKey.getEncoded(), "bob"
+				.getBytes()));
+		theirRandom.setSeed(concatByteArray(sharedSecretKey.getEncoded(),
+				"alice".getBytes()));
+
+		// generate the other person's first nonce to be expected
+		theirCurrentNonce = new byte[6];
+		theirRandom.nextBytes(theirCurrentNonce);
+	}
+
+	/**
+	 * This function generates a Blowfish SecretKey based on MD5 hasing the DH
+	 * shared secret
+	 * 
+	 * @param sharedSecret
+	 *            The secret agreed upon during Diffie-Helman
+	 * @returnThe secret key to use for encryption etc
+	 * @throws NoSuchAlgorithmException
+	 */
+	private SecretKey generateKey(byte[] sharedSecret)
+			throws NoSuchAlgorithmException {
+		// hash shared secret, generate Blowfish key from that.
+		MessageDigest md = MessageDigest.getInstance("MD5");
+		SecretKey key = new SecretKeySpec(md.digest(sharedSecret), "Blowfish");
+
+		return key;
+	}
+
+	/**
+	 * This fucntion generates the Diffie-Helman parameters from Alice's public
+	 * key if we're bob, or generates new parameters if we're alice
+	 * 
+	 * @param alicePubKey
+	 * @return The key pair to use
+	 * @throws NoSuchAlgorithmException
+	 * @throws InvalidParameterSpecException
+	 * @throws InvalidAlgorithmParameterException
+	 * @throws InvalidKeyException
+	 */
+	private KeyPair genDHParamsAndKP(DHPublicKey alicePubKey)
+			throws NoSuchAlgorithmException, InvalidParameterSpecException,
+			InvalidAlgorithmParameterException, InvalidKeyException {
+		DHParameterSpec DHParamSpec;
+		if (alicePubKey == null) {
+			// we're Alice
+
+			// Create the parameter generator for 1024-bit Diffie-Hellman key
+			// pair
+			AlgorithmParameterGenerator paramGen;
+			paramGen = AlgorithmParameterGenerator.getInstance("DH");
+			paramGen.init(1024);
+			// Generate the parameters G and P
+			AlgorithmParameters params = paramGen.generateParameters();
+			DHParamSpec = (DHParameterSpec) params
+					.getParameterSpec(DHParameterSpec.class);
+		} else {
+			// we're Bob (or Eve :P)
+			DHParamSpec = alicePubKey.getParams();
+		}
+
+		// From here on, we're Alice or Bob
+
+		// Create key pair generator
+		KeyPairGenerator myKeypairGen = KeyPairGenerator.getInstance("DH");
+		myKeypairGen.initialize(DHParamSpec);
+
+		// Generate key pair
+		KeyPair myKeypair = myKeypairGen.generateKeyPair();
+
+		return myKeypair;
+	}
+
+	public boolean terminateSession() {
+		try {
+			if (commsSocket == null)
+				return false;
+			dataIn.close();
+			dataOut.close();
+			commsSocket.close();
+			commsSocket = null;
+		} catch (Exception e) {
+			return false;
+		}
+
+		return true;
+	}
+
+	public boolean sendPacket(byte command) {
+		return sendPacket(command, new byte[0]);
+	}
+
+	public boolean sendPacket(byte command, String data) {
+		// System.out.println("String data: " + data);
+		return sendPacket(command, data.getBytes());
+	}
+
+	public boolean sendPacket(byte command, byte[] data) {
+		return sendPacket(command, data, data.length);
+	}
+
+	public boolean sendPacket(byte command, byte[] data, int size) {
+		StealthNetPacket pckt = new StealthNetPacket();
+		pckt.command = command;
+		pckt.data = new byte[size];
+		System.arraycopy(data, 0, pckt.data, 0, size);
+		return sendPacket(pckt);
+	}
+
+	public boolean sendPacket(StealthNetPacket pckt) {
+		if (dataOut == null)
+			return false;
+		if (pckt.command == StealthNetPacket.CMD_KEYEXCHANGE)
+			//TODO encrypt the packet with public key encryption
+			dataOut.println(pckt.toString());
+		else {
+			//move the command bit into the data, set command bit to encrypted packet
+			pckt.data = concatByteArray(new byte[]{pckt.command}, pckt.data);
+			pckt.command = StealthNetPacket.CMD_ENCRYPTED;
+			
+			// Add the HMAC and nonce, then encrypt the packet data, before
+			// sending.
+			pckt.data = addHMACandNonce(pckt.data);
+			pckt.data = encrypt(pckt.data);
+			
+			//System.out.println("sending data: " + printBytes(pckt.data));
+			
+			dataOut.println(pckt.toString());
+		}
+
+		return true;
+	}
+
+	/**
+	 * Function to encrypt the packet data
+	 * 
+	 * @param data
+	 * @return encrypted message
+	 */
+	private byte[] encrypt(byte[] data) {
+		byte[] encrypted = null;
+
+		try {
+			// Initialise cipher
+			Cipher cipher = Cipher.getInstance("Blowfish");
+			cipher.init(Cipher.ENCRYPT_MODE, sharedSecretKey);
+			// Run cipher
+			encrypted = cipher.doFinal(data);
+		} catch (Exception e) {
+			// This shouldn't happen
+			e.printStackTrace();
+			System.out.println("Unable to encrypt");
+			System.exit(1);
+		}
+
+		return encrypted;
+	}
+
+	/**
+	 * Function to add the HMAC and nonce to the message data form is
+	 * HMAC+Nonce+Message
+	 * 
+	 * @param data
+	 * @return byte array of the message with added HMAC and nonce in form
+	 *         HMAC+Nonce+Message
+	 */
+	private byte[] addHMACandNonce(byte[] data) {
+
+		byte[] hmac = null;
+		byte[] nonce = new byte[6];
+
+		// Generate new nonce
+		myRandom.nextBytes(nonce);
+
+		try {
+			// create new HMAC-MD5
+			Mac mac = Mac.getInstance("HmacMD5");
+			mac.init(sharedSecretKey);
+			hmac = mac.doFinal(data);
+
+			//debug to make sure hmac checking is working
+			//Arrays.sort(hmac);
+
+		} catch (Exception e) {
+			e.printStackTrace();
+			System.out.println("Unable to add HMAC");
+			System.exit(1);
+		}
+
+		// Return the concatenated information
+		return Helpers.concatByteArray(hmac, Helpers.concatByteArray(nonce, data));
+	}
+
+
+
+	public StealthNetPacket recvPacket() throws IOException {
+		StealthNetPacket pckt = null;
+		String str = dataIn.readLine();
+		pckt = new StealthNetPacket(str);
+
+		//System.out.println("receiving data: " + printBytes(pckt.data));
+
+		// decrypt packets except the key exchange
+		if (!(pckt.command == StealthNetPacket.CMD_KEYEXCHANGE)) {
+			pckt.data = decrypt(pckt.data);
+			
+			checkHMACandNonce(pckt);
+			
+			//get the command back out of the message
+			pckt = extractCommand(pckt);
+		} else {
+			//TODO decrypt with private key
+		}
+
+		// System.out.println(pckt.data);
+		return pckt;
+	}
+	
+	/**
+	 * Removes the first bit and sets the packet's command to it
+	 * @param pckt
+	 * @return
+	 */
+	private StealthNetPacket extractCommand(StealthNetPacket pckt) {
+		//Just return if the HMAC and nonce didn't check out
+		if (pckt.command == StealthNetPacket.CMD_BADPACKET) return pckt;
+		
+		//otherwise extract the command from the message and fix the message
+		pckt.command = pckt.data[0];
+		byte[] newdata = new byte[pckt.data.length-1];
+		for (int i=0; i< newdata.length; i++){
+			newdata[i] = pckt.data[i+1]; 
+		}
+		pckt.data = newdata;
+		return pckt;
+	}
+
+	/**
+	 * Function to decrypt the packet data
+	 * 
+	 * @param data
+	 * @return decrypted packet data
+	 */
+	private byte[] decrypt(byte[] data) {
+		byte[] decrypted = null;
+		try {
+			// Initialise cipher
+			Cipher cipher = Cipher.getInstance("Blowfish");
+			cipher.init(Cipher.DECRYPT_MODE, sharedSecretKey);
+			// decrypt
+			decrypted = cipher.doFinal(data);
+		} catch (Exception e) {
+			// This should never happen
+			e.printStackTrace();
+			System.out.println("Could not decrypt packet");
+			System.exit(1);
+		}
+		return decrypted;
+	}
+
+	/**
+	 * Function to check the HMAC and the Nonce and returns the message. If the
+	 * HMAC or Nonce are wrong, the command is set to {@link StealthNetPacket}.CMD_BADPACKET
+	 * 
+	 * @param pckt
+	 * @return
+	 */
+	private boolean checkHMACandNonce(StealthNetPacket pckt) {
+		boolean valid = true;
+		byte[] message = new byte[pckt.data.length - 16 - 6];
+		byte[] incomingHMAC = new byte[16];
+		byte[] incomingNonce = new byte[6];
+		//Grab incoming HMAC
+		System.arraycopy(pckt.data, 0, incomingHMAC, 0, 16);
+		//Grab incoming Nonce
+		System.arraycopy(pckt.data, 16, incomingNonce, 0, 6);
+		//Grab incoming message data
+		System.arraycopy(pckt.data, 22, message, 0, pckt.data.length - 22);
+		pckt.data = message;
+
+		try {
+			
+			//Initialise the HMAC-MD5 generator
+			Mac mac = Mac.getInstance("HmacMD5");
+			mac.init(sharedSecretKey);
+			
+			//Generate new HMAC from the incoming message and check if it equals the incoming HMAC 
+			if (!(Arrays.equals(mac.doFinal(message), incomingHMAC))) {
+				System.out.println("HMACs NOT equal!!!");
+				pckt.command = StealthNetPacket.CMD_BADPACKET;
+				valid = false;
+			}
+			//Check if the incoming nonce equals the expected nonce
+			if (!(Arrays.equals(incomingNonce, theirCurrentNonce))) {
+				System.out.println("Nonce not what is expected");
+				pckt.command = StealthNetPacket.CMD_BADPACKET;
+				valid = false;
+			}
+			
+			//If we get here, the nonce checked out, so should be used up and generate new nonce
+			theirRandom.nextBytes(theirCurrentNonce);
+
+		} catch (Exception e) {
+			e.printStackTrace();
+			System.out.println("Unable to test HMAC");
+			System.exit(1);
+		}
+
+		return valid;
+	}
+
+	/**
+	 * Function created for debugging purposes.
+	 * Just creates a string of int values from a byte array
+	 * 
+	 * @param arr
+	 * @return string of int values separated by comma
+	 */
+	private String printBytes(byte[] arr) {
+		String toReturn = new String();
+		for (int i = 0; i < arr.length; i++) {
+			toReturn += "" + (int) arr[i] + ",";
+		}
+		return toReturn;
+	}
+
+	public boolean recvReady() throws IOException {
+		/*
+		 * System.out.println("Connected: " + commsSocket.isConnected());
+		 * System.out.println("Closed: " + commsSocket.isClosed());
+		 * System.out.println("InClosed: " + commsSocket.isInputShutdown());
+		 * System.out.println("OutClosed: " + commsSocket.isOutputShutdown());
+		 */
+		return dataIn.ready();
+	}
+}
+
+/******************************************************************************
+ * END OF FILE: StealthNetComms.java
+ *****************************************************************************/
+

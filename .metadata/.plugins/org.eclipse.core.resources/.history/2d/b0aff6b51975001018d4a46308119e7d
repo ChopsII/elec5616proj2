@@ -1,0 +1,20 @@
+
+public class Helpers {
+	
+	/**
+	 * Function written to concatenate two byte arrays into a new array
+	 * 
+	 * @param arr1
+	 * @param arr2
+	 * @return new array of the size of the two input arrays with the data of
+	 *         the first then the data of the second
+	 */
+	private byte[] concatByteArray(byte[] arr1, byte[] arr2) {
+		byte[] toReturn = new byte[arr1.length + arr2.length];
+		System.arraycopy(arr1, 0, toReturn, 0, arr1.length);
+		System.arraycopy(arr2, 0, toReturn, arr1.length, arr2.length);
+
+		return toReturn;
+	}
+
+}

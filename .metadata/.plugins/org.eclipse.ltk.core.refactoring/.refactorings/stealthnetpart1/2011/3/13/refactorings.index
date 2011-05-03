@@ -1,0 +1,18 @@
+1300921395979	Copy elements
+1300921400899	Delete element
+1300926718804	Rename local variable 'aliceKpairGen'
+1300927079871	Rename local variable 'aliceKeypair'
+1300927086415	Rename local variable 'aliceKeyAgree'
+1300927270011	Rename method 'genDHParams'
+1300927387765	Rename local variable 'myKeyAgree'
+1300927391463	Rename local variable 'AliceKeyAgree'
+1300927395490	Rename local variable 'myKP'
+1300927753630	Rename local variable 'alicePubKeyEnc'
+1301018348622	Rename method 'addHMAC'
+1301018359314	Rename method 'checkHMAC'
+1301019681730	Delete element
+1301019685954	Rename compilation unit 'StealthNetClient2.java'
+1301025266338	Rename local variable 'incomingNone'
+1301025403163	Rename field 'aliceRandom'
+1301025407852	Rename field 'bobRandom'
+1301027739256	Rename local variable 'incomingNonce'

@@ -1,0 +1,47 @@
+import java.security.InvalidKeyException;
+import java.security.Key;
+import java.security.NoSuchAlgorithmException;
+
+import javax.crypto.Mac;
+
+
+public class Helpers {
+	
+	/**
+	 * Function written to concatenate two byte arrays into a new array
+	 * 
+	 * @param arr1
+	 * @param arr2
+	 * @return new array of the size of the two input arrays with the data of
+	 *         the first then the data of the second
+	 */
+	static byte[] concatByteArray(byte[] arr1, byte[] arr2) {
+		byte[] toReturn = new byte[arr1.length + arr2.length];
+		System.arraycopy(arr1, 0, toReturn, 0, arr1.length);
+		System.arraycopy(arr2, 0, toReturn, arr1.length, arr2.length);
+
+		return toReturn;
+	}
+	
+	static byte[] generateHMAC(Key key, byte[] bytes){
+		try {
+			Mac mac = Mac.getInstance("HmacMD5");
+			mac.init(key);
+			return mac.doFinal(bytes);
+		} catch (InvalidKeyException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		} catch (NoSuchAlgorithmException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		} catch (IllegalStateException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		}
+		return null;
+	}
+
+}
