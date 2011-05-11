@@ -1,0 +1,1074 @@
+/******************************************************************************
+ * ELEC5616
+ * Computer and Network Security, The University of Sydney
+ * Copyright (C) 2002-2004, Matt Barrie, Stephen Gould and Ryan Junee
+ *
+ * PROJECT:         StealthNet
+ * FILENAME:        StealthNetClient.java
+ * AUTHORS:         Matt Barrie, Stephen Gould and Ryan Junee
+ * DESCRIPTION:     Implementation of StealthNet Client for ELEC5616
+ *                  programming assignment.
+ *                  This code has been written for the purposes of teaching
+ *                  cryptography and computer security. It is to be used as
+ *                  a demonstration only. No attempt has been made to optimise
+ *                  the source code.
+ * VERSION:         1.0-ICE
+ *
+ * REVISION HISTORY:
+ *
+ *****************************************************************************/
+
+/* Import Libraries **********************************************************/
+
+import java.io.*;
+import java.net.*;
+import javax.swing.*;
+import javax.swing.table.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.util.Hashtable;
+import javax.crypto.*;
+import javax.crypto.spec.*;
+import javax.crypto.interfaces.*;
+import java.security.*;
+import java.security.spec.*;
+import java.util.Arrays;
+import java.lang.reflect.Array;
+import java.util.*;
+import java.nio.*;
+import java.security.Signature;
+
+/* StealthNetClient Class Definition *****************************************/
+
+public class StealthNetClient {
+	private static JFrame clientFrame;
+	private JTextArea msgTextBox;
+	private JButton loginBtn;
+	private StealthNetComms stealthComms = null;
+	private javax.swing.Timer stealthTimer;
+	private String userID = null;
+	private JTable buddyTable = null, secretTable = null;
+	private DefaultTableModel buddyListData = null, secretListData = null;
+	JTextField creditsBox;
+
+	private int credits = 0;
+	private int chainLength = 0;
+	private SecureRandom chainRandom;
+	PublicKey publicKey;
+	PrivateKey privateKey;
+	public static Mac mac; // HMAC-MD5
+	private byte[] hmac = null;
+	private byte[] hashSeed = new byte[32];
+	static SecureRandom secureRandom; // Recieving sequence numbers
+
+	private class SecretData {
+		String description = null;
+		String filename = null;
+	}
+
+	static private Hashtable secretDescriptions = new Hashtable();
+
+	public StealthNetClient() {
+		try {
+			secureRandom = SecureRandom.getInstance("SHA1PRNG");
+		} catch (NoSuchAlgorithmException e) {
+		}
+		// secureRandom.setSeed(privateKey.getEncoded());
+		secureRandom.setSeed(StealthNetStorage.sk.getEncoded());
+		stealthTimer = new javax.swing.Timer(100, new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				processPackets();
+			}
+		});
+	}
+
+	public Component createGUI() {
+		JPanel pane = new JPanel();
+
+		// create buddy list
+		buddyListData = new DefaultTableModel() {
+			public boolean isCellEditable(int row, int col) {
+				return false;
+			};
+		};
+		buddyListData.addColumn("User ID");
+		buddyListData.addColumn("Online");
+		buddyTable = new JTable(buddyListData);
+		buddyTable.setPreferredScrollableViewportSize(new Dimension(200, 100));
+		buddyTable.getColumnModel().getColumn(0).setPreferredWidth(180);
+		JScrollPane buddyScrollPane = new JScrollPane(buddyTable);
+		buddyScrollPane.setBorder(BorderFactory.createCompoundBorder(
+				BorderFactory.createCompoundBorder(BorderFactory
+						.createTitledBorder("User List"), BorderFactory
+						.createEmptyBorder(0, 0, 0, 0)), buddyScrollPane
+						.getBorder()));
+
+		// add mouse listen for popup windows
+		// act on JTable row right-click
+		MouseListener ml = new MouseAdapter() {
+			JPopupMenu popup;
+			int row;
+			String myid, mystatus;
+
+			public void mouseReleased(MouseEvent e) {
+
+				if (e.isShiftDown() || e.isControlDown() || e.isAltDown()) {
+					return;
+				}
+				if ((e.getModifiers() & InputEvent.BUTTON3_MASK) == InputEvent.BUTTON3_MASK) {
+					JMenuItem item;
+
+					row = buddyTable.rowAtPoint(e.getPoint());
+
+					popup = new JPopupMenu("Action");
+					popup.setLabel("Action");
+
+					item = new JMenuItem("Chat");
+					item.addActionListener(new ActionListener() {
+						public void actionPerformed(ActionEvent e) {
+							startChat(row);
+						}
+					});
+					popup.add(item);
+
+					item = new JMenuItem("Send File");
+
+					item.addActionListener(new ActionListener() {
+						public void actionPerformed(ActionEvent e) {
+							sendFile(row);
+						}
+					});
+					popup.add(item);
+					popup.show(e.getComponent(), e.getX(), e.getY());
+				}
+			}
+		};
+		buddyTable.addMouseListener(ml);
+
+		// create secret window
+		secretListData = new DefaultTableModel() {
+			public boolean isCellEditable(int row, int col) {
+				return false;
+			};
+		};
+		secretListData.addColumn("Secret");
+		secretListData.addColumn("Cost");
+
+		secretTable = new JTable(secretListData);
+		secretTable.setPreferredScrollableViewportSize(new Dimension(200, 100));
+		secretTable.getColumnModel().getColumn(0).setPreferredWidth(180);
+
+		ml = new MouseAdapter() {
+			JPopupMenu popup;
+			int row;
+			String cost;
+
+			public void mouseReleased(MouseEvent e) {
+
+				if (e.isShiftDown() || e.isControlDown() || e.isAltDown()) {
+					return;
+				}
+				if ((e.getModifiers() & InputEvent.BUTTON3_MASK) == InputEvent.BUTTON3_MASK) {
+					JMenuItem item;
+
+					row = buddyTable.rowAtPoint(e.getPoint());
+
+					popup = new JPopupMenu("Action");
+					popup.setLabel("Action");
+
+					item = new JMenuItem("Details");
+					item.addActionListener(new ActionListener() {
+						public void actionPerformed(ActionEvent e) {
+							secretDetails(row);
+						}
+					});
+					popup.add(item);
+
+					item = new JMenuItem("Purchase");
+					item.addActionListener(new ActionListener() {
+						public void actionPerformed(ActionEvent e) {
+							purchaseSecret(row);
+						}
+					});
+					popup.add(item);
+
+					popup.show(e.getComponent(), e.getX(), e.getY());
+				}
+			}
+		};
+		secretTable.addMouseListener(ml);
+
+		JScrollPane secretScrollPane = new JScrollPane(secretTable);
+		secretScrollPane.setBorder(BorderFactory.createCompoundBorder(
+				BorderFactory.createCompoundBorder(BorderFactory
+						.createTitledBorder("Secrets List"), BorderFactory
+						.createEmptyBorder(0, 0, 0, 0)), secretScrollPane
+						.getBorder()));
+
+		// create instant message window
+		msgTextBox = new JTextArea("Authentication required.\n");
+		msgTextBox.setLineWrap(true);
+		msgTextBox.setWrapStyleWord(true);
+		msgTextBox.setEditable(false);
+		JScrollPane msgScrollPane = new JScrollPane(msgTextBox);
+		msgScrollPane
+				.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+		msgScrollPane.setPreferredSize(new Dimension(200, 100));
+		msgScrollPane.setBorder(BorderFactory.createCompoundBorder(
+				BorderFactory.createCompoundBorder(BorderFactory
+						.createTitledBorder("Console"), BorderFactory
+						.createEmptyBorder(0, 0, 0, 0)), msgScrollPane
+						.getBorder()));
+
+		// create split pane for buddy list and messages
+
+		final JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+				buddyScrollPane, secretScrollPane);
+		splitPane.setOneTouchExpandable(true);
+		splitPane.setDividerLocation(150);
+
+		final JSplitPane topPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+				splitPane, msgScrollPane);
+		topPane.setOneTouchExpandable(true);
+
+		// Credits display
+		JPanel creditsPane = new JPanel();
+		creditsPane.setLayout(new GridLayout(1, 0));
+		creditsPane.setPreferredSize(new Dimension(180, 30));
+		creditsPane.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+		creditsPane.add(new JLabel("Credits:  ", SwingConstants.RIGHT));
+		creditsBox = new JTextField(new Integer(credits).toString());
+		creditsBox.setEditable(false);
+		creditsPane.add(creditsBox);
+
+		// create buttons (login, send message, chat, ftp)
+		loginBtn = new JButton(new ImageIcon("login.gif"));
+		loginBtn.setVerticalTextPosition(AbstractButton.BOTTOM);
+		loginBtn.setHorizontalTextPosition(AbstractButton.CENTER);
+		loginBtn.setMnemonic(KeyEvent.VK_N);
+		loginBtn.setToolTipText("Login");
+		loginBtn.addActionListener(new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				if (stealthComms == null) {
+					login();
+				} else {
+					logout();
+				}
+			}
+		});
+
+		final JButton msgBtn = new JButton(new ImageIcon("msg.gif"));
+		msgBtn.setVerticalTextPosition(AbstractButton.BOTTOM);
+		msgBtn.setHorizontalTextPosition(AbstractButton.CENTER);
+		msgBtn.setMnemonic(KeyEvent.VK_M);
+		msgBtn.setToolTipText("Create Secret");
+		msgBtn.addActionListener(new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				createSecret();
+			}
+		});
+
+		final JButton creditBtn = new JButton(new ImageIcon("withdraw.gif"));
+		creditBtn.setVerticalTextPosition(AbstractButton.BOTTOM);
+		creditBtn.setHorizontalTextPosition(AbstractButton.CENTER);
+		creditBtn.setMnemonic(KeyEvent.VK_C);
+		creditBtn.setToolTipText("Withdraw Credits");
+		creditBtn.addActionListener(new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				withdrawCredits();
+			}
+		});
+
+		final JButton bankBtn = new JButton(new ImageIcon("balance.gif"));
+		bankBtn.setVerticalTextPosition(AbstractButton.BOTTOM);
+		bankBtn.setHorizontalTextPosition(AbstractButton.CENTER);
+		bankBtn.setMnemonic(KeyEvent.VK_C);
+		bankBtn.setToolTipText("Check Balance");
+		bankBtn.addActionListener(new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				getBalance();
+			}
+		});
+
+		final JButton depositBtn = new JButton(new ImageIcon("deposit.gif"));
+		depositBtn.setVerticalTextPosition(AbstractButton.BOTTOM);
+		depositBtn.setHorizontalTextPosition(AbstractButton.CENTER);
+		depositBtn.setMnemonic(KeyEvent.VK_C);
+		depositBtn.setToolTipText("Deposit");
+		depositBtn.addActionListener(new ActionListener() {
+			public void actionPerformed(ActionEvent e) {
+				depositCredits();
+			}
+		});
+
+		JPanel btnPane = new JPanel();
+		btnPane.setLayout(new GridLayout(1, 0));
+		btnPane.setPreferredSize(new Dimension(180, 40));
+		btnPane.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+		btnPane.add(loginBtn);
+		btnPane.add(msgBtn);
+		btnPane.add(creditBtn);
+		btnPane.add(bankBtn);
+		btnPane.add(depositBtn);
+
+		JPanel bottomPane = new JPanel();
+		bottomPane.setLayout(new BorderLayout());
+		bottomPane.add(creditsPane, BorderLayout.NORTH);
+		bottomPane.add(btnPane, BorderLayout.SOUTH);
+
+		// create top-level panel and add components
+
+		pane.setBorder(BorderFactory.createEmptyBorder(10, 10, 5, 10));
+		pane.setLayout(new BorderLayout());
+		pane.add(topPane, BorderLayout.NORTH);
+		pane.add(bottomPane, BorderLayout.SOUTH);
+
+		return pane;
+	}
+
+	private String getPassword() {
+		JLabel label = new JLabel("Please enter your password:");
+		JPasswordField jpf = new JPasswordField();
+		JOptionPane.showConfirmDialog(null, new Object[] { label, jpf },
+				"Password:", JOptionPane.OK_CANCEL_OPTION);
+		return jpf.getText();
+	}
+
+	private synchronized void login() {
+		if (stealthComms != null) {
+			msgTextBox.append("[*ERR*] Already logged in.\n");
+			return;
+		}
+
+		try {
+			userID = JOptionPane.showInputDialog("Login:", userID);
+			if (userID == null)
+				return;
+
+			PublicKey serverPublicKey = StealthNetServer.getPublicKey();
+
+			String pass = getPassword();
+
+			/*
+			 * Retrieve their private and public key from file storage. Or save
+			 * a new one.
+			 */
+			if (StealthNetStorage.exists(userID + "_private")) {
+				byte[] encodedKey = StealthNetStorage.retrieve(userID
+						+ "_private", userID, pass); // userID is filename and
+														// salt
+				if (encodedKey == null) {
+					msgTextBox.append("[*ERR*] Invalid Password or Keyfile.\n");
+					return;
+				}
+				PKCS8EncodedKeySpec privateKeySpec = new PKCS8EncodedKeySpec(
+						encodedKey);
+				KeyFactory kf = KeyFactory.getInstance("RSA");
+				privateKey = kf.generatePrivate(privateKeySpec);
+
+				encodedKey = StealthNetStorage.retrieve(userID + "_public",
+						userID, pass);
+				if (encodedKey == null) {
+					msgTextBox.append("[*ERR*] Invalid Password or Keyfile.\n");
+					return;
+				}
+				X509EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(
+						encodedKey);
+				publicKey = kf.generatePublic(publicKeySpec);
+			} else {
+				KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+				SecureRandom random = SecureRandom.getInstance("SHA1PRNG",
+						"SUN");
+				random.setSeed(pass.getBytes());
+
+				keyGen.initialize(1024, random);
+
+				KeyPair pair = keyGen.generateKeyPair();
+				privateKey = pair.getPrivate();
+				publicKey = pair.getPublic();
+
+				byte[] encodedKey = privateKey.getEncoded();
+				StealthNetStorage.store(userID + "_private", userID, pass,
+						encodedKey);
+				encodedKey = publicKey.getEncoded();
+				StealthNetStorage.store(userID + "_public", userID, pass,
+						encodedKey);
+			}
+
+			Cipher otherCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+			otherCipher.init(Cipher.ENCRYPT_MODE, serverPublicKey);
+
+			Cipher myCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+			myCipher.init(Cipher.DECRYPT_MODE, privateKey);
+
+			stealthComms = new StealthNetComms(myCipher);
+			stealthComms.setOutCipher(otherCipher);
+			stealthComms.setPublicKey(publicKey);
+			stealthComms.initiateSession(new Socket(StealthNetComms.SERVERNAME,
+					StealthNetComms.SERVERPORT));
+			byte[] userid_data = userID.getBytes();
+			byte[] public_key = publicKey.getEncoded();
+			byte[] send_data = new byte[userid_data.length + 1];
+
+			// send the length of the user id, then the user id, then the public
+			// key
+			send_data[0] = (byte) userid_data.length;
+			System.arraycopy(userid_data, 0, send_data, 1, userid_data.length);
+
+			stealthComms.sendPacket(StealthNetPacket.CMD_LOGIN, send_data);
+
+			stealthTimer.start();
+		} catch (UnknownHostException e) {
+			msgTextBox.append("[*ERR*] Unknown host: "
+					+ StealthNetComms.SERVERNAME + "\n");
+		} catch (IOException e) {
+			msgTextBox.append("[*ERR*] Could not connect to host: "
+					+ StealthNetComms.SERVERNAME + "\n");
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+
+		msgTextBox.append("Connected to stealthnet.\n");
+		clientFrame.setTitle("stealthnet [" + userID + "]");
+		loginBtn.setIcon(new ImageIcon("logout.gif"));
+		loginBtn.setToolTipText("Logout");
+	}
+
+	private synchronized void logout() {
+		if (stealthComms != null) {
+			stealthTimer.stop();
+			stealthComms.sendPacket(StealthNetPacket.CMD_LOGOUT);
+			stealthComms.terminateSession();
+			stealthComms = null;
+			loginBtn.setIcon(new ImageIcon("login.gif"));
+			loginBtn.setToolTipText("Login");
+			buddyListData.setRowCount(0);
+			secretListData.setRowCount(0);
+			msgTextBox.append("Disconnected.\n");
+		}
+	}
+
+	private void withdrawCredits() {
+		String userMsg = "";
+		int numCredits = 0;
+
+		if (stealthComms == null) {
+			msgTextBox.append("[*ERR*] Not logged in.\n");
+			return;
+		}
+
+		numCredits = Integer.parseInt(JOptionPane.showInputDialog(
+				"How many credits would you like to withdraw?", numCredits));
+
+		if (numCredits <= 0) {
+			msgTextBox.append("[*ERR*] Cannot withdraw negative coins.\n");
+			return;
+		}
+
+		secureRandom.nextBytes(hashSeed);
+		hmac = hashChain(numCredits + credits, hashSeed);
+
+		userMsg = numCredits + ";" + new String(hmac);
+		stealthComms.sendPacket(StealthNetPacket.CMD_WITHDRAW, userMsg);
+	}
+
+	public static byte[] hashChain(int timesToHash, byte[] currentHash) {
+		byte[] hash = new byte[32];
+
+		try {
+			mac = Mac.getInstance("HmacMD5");
+			mac.init(StealthNetStorage.sk);
+
+			hash = currentHash;
+
+			while (timesToHash != 0) {
+				mac.init(StealthNetStorage.sk);
+				hash = mac.doFinal(new String(hash).getBytes());
+				timesToHash -= 1;
+			}
+		} catch (Exception e) {
+			System.err.println("Hash Chain fail");
+			return null;
+		}
+		return new String(hash).getBytes();
+	}
+
+	public static void printByteArray(byte[] arr) {
+		for (int i = 0; i < Array.getLength(arr); i++) {
+			System.out.print(arr[i] + " ");
+		}
+		System.out.println();
+	}
+
+	private void getBalance() {
+		if (stealthComms == null) {
+			msgTextBox.append("[*ERR*] Not logged in.\n");
+			return;
+		}
+
+		stealthComms.sendPacket(StealthNetPacket.CMD_BALANCE_SN, "");
+	}
+
+	private void depositCredits() {
+		int numCredits = 0;
+
+		if (stealthComms == null) {
+			msgTextBox.append("[*ERR*] Not logged in.\n");
+			return;
+		}
+
+		numCredits = Integer.parseInt(JOptionPane.showInputDialog(
+				"How many credits would you like to deposit?", numCredits));
+
+		if (numCredits <= 0 || credits - numCredits < 0) {
+			msgTextBox
+					.append("[*ERR*] Cannot deposit more coins then you have\n");
+			return;
+		}
+
+		String userMsg = numCredits + ";"
+				+ new String(hashChain(credits - numCredits, hashSeed));
+		stealthComms.sendPacket(StealthNetPacket.CMD_DEPOSIT_SN, userMsg);
+	}
+
+	private void createSecret() {
+		String userMsg;
+		String name = "", description = "", cost = "", filename = "";
+
+		if (stealthComms == null) {
+			msgTextBox.append("[*ERR*] Not logged in.\n");
+			return;
+		}
+
+		name = JOptionPane.showInputDialog("Secret Name:", name);
+
+		description = JOptionPane.showInputDialog("Secret Description:",
+				description);
+
+		cost = JOptionPane.showInputDialog("Secret Cost (credits):", cost);
+
+		FileDialog fileOpen = new FileDialog(clientFrame,
+				"Select Secret File....", FileDialog.LOAD);
+		fileOpen.show();
+		if (fileOpen.getFile() == null || fileOpen.getFile().length() == 0)
+			return;
+
+		userMsg = name + ";" + description + ";" + cost + ";"
+				+ fileOpen.getDirectory() + ";" + fileOpen.getFile();
+		if (userMsg == null)
+			return;
+		stealthComms.sendPacket(StealthNetPacket.CMD_CREATESECRET, userMsg);
+	}
+
+	private void secretDetails(int row) {
+		String name;
+		SecretData data;
+
+		name = (String) secretTable.getValueAt(row, 0);
+		data = (SecretData) secretDescriptions.get(name);
+		if (data != null) {
+			JOptionPane.showMessageDialog(null, data.description,
+					"Details of Secret: " + name, JOptionPane.PLAIN_MESSAGE);
+		}
+
+		return;
+	}
+
+	private void purchaseSecret(int row) {
+		String name = (String) secretTable.getValueAt(row, 0);
+		SecretData data = (SecretData) secretDescriptions.get(name);
+		if (data == null)
+			return;
+
+		// set up socket on a free port
+		ServerSocket ftpSocket = null;
+		try {
+			ftpSocket = new ServerSocket(0);
+		} catch (IOException e) {
+			System.err.println("could not set up listening port");
+			msgTextBox.append("[*ERR*] Transfer failed.\n");
+			return;
+		}
+
+		// send reqest to server
+		String iAddr;
+		try {
+			iAddr = InetAddress.getLocalHost().toString();
+			if (iAddr.lastIndexOf("/") > 0)
+				iAddr = iAddr.substring(0, iAddr.lastIndexOf("/"));
+		} catch (UnknownHostException e) {
+			iAddr = "localhost";
+		}
+		iAddr += ":" + Integer.toString(ftpSocket.getLocalPort());
+		stealthComms.sendPacket(StealthNetPacket.CMD_GETSECRET, name + "@"
+				+ iAddr);
+
+		/* Server will send us the public key of the other user now */
+		PublicKey otherKey = waitForPubKey();
+
+		FileDialog fileSave = new FileDialog(clientFrame, "Save As...",
+				FileDialog.SAVE);
+		fileSave.setFile(data.filename);
+		fileSave.show();
+		if ((fileSave.getFile() != null) && (fileSave.getFile().length() > 0)) {
+			// wait for user to connect, then start file transfer
+			try {
+				ftpSocket.setSoTimeout(2000); // 2 second timeout
+				Cipher otherCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+				otherCipher.init(Cipher.ENCRYPT_MODE, otherKey);
+
+				Cipher myCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+				myCipher.init(Cipher.DECRYPT_MODE, privateKey);
+
+				StealthNetComms snComms = new StealthNetComms(myCipher);
+				snComms.setOutCipher(otherCipher);
+
+				snComms.acceptSession(ftpSocket.accept());
+				new StealthNetFileTransfer(snComms, fileSave.getDirectory()
+						+ fileSave.getFile(), false).start();
+			} catch (Exception e) {
+				e.printStackTrace();
+				msgTextBox.append("[*ERR*] Transfer failed.\n");
+			}
+		}
+	}
+
+	private boolean isOKtoSendtoRow(int row) {
+		String myid, mystatus;
+
+		myid = (String) buddyTable.getValueAt(row, 0);
+		mystatus = (String) buddyTable.getValueAt(row, 1);
+
+		if (myid.equals(userID)) {
+			msgTextBox.append("[*ERR*] Can't send to self.\n");
+			return false;
+		}
+
+		// check if the user is logged in
+		if (mystatus.equals("false")) {
+			msgTextBox.append("[*ERR*] User is not online.\n");
+			return false;
+		}
+
+		return true;
+	}
+
+	private void startChat(int row) {
+
+		if (!isOKtoSendtoRow(row)) {
+			return;
+		}
+
+		String myid = (String) buddyTable.getValueAt(row, 0);
+
+		// set up socket on a free port
+		ServerSocket chatSocket = null;
+
+		try {
+			chatSocket = new ServerSocket(0);
+		} catch (IOException e) {
+			msgTextBox.append("[*ERR*] Chat failed.\n");
+			return;
+		}
+
+		// send message to server with target user and listening address and
+		// port
+		String iAddr;
+		try {
+			iAddr = InetAddress.getLocalHost().toString();
+			if (iAddr.lastIndexOf("/") > 0)
+				iAddr = iAddr.substring(0, iAddr.lastIndexOf("/"));
+		} catch (UnknownHostException e) {
+			iAddr = "localhost";
+		}
+		iAddr += ":" + Integer.toString(chatSocket.getLocalPort());
+
+		// Request other users public key
+		PublicKey otherKey = getPubKey(myid);
+
+		stealthComms.sendPacket(StealthNetPacket.CMD_CHAT, myid + "@" + iAddr);
+
+		// wait for user to connect and open chat window
+		try {
+			Cipher otherCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+			otherCipher.init(Cipher.ENCRYPT_MODE, otherKey);
+
+			Cipher myCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+			myCipher.init(Cipher.DECRYPT_MODE, privateKey);
+
+			chatSocket.setSoTimeout(2000); // 2 second timeout
+			StealthNetComms snComms = new StealthNetComms(myCipher);
+			snComms.setOutCipher(otherCipher);
+			snComms.acceptSession(chatSocket.accept());
+			new jbStealthNetChat(userID, snComms).start();
+		} catch (Exception e) {
+			msgTextBox.append("[*ERR*] Chat failed.\n");
+		}
+	}
+
+	/*
+	 * Used for exchanges where the server pushes a public key to the user.
+	 */
+	private PublicKey waitForPubKey() {
+		try {
+			StealthNetPacket snp = stealthComms.recvPacket();
+			byte[] encodedKey = snp.data;
+			KeyFactory kf = KeyFactory.getInstance("RSA");
+			X509EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(
+					encodedKey);
+			publicKey = kf.generatePublic(publicKeySpec);
+			return publicKey;
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+
+	/*
+	 * Used for exchanges where the user requests the public key of another
+	 * known user.
+	 */
+	private PublicKey getPubKey(String id) {
+		try {
+			stealthComms.sendPacket(StealthNetPacket.CMD_GETPUBKEY, id);
+			StealthNetPacket snp = stealthComms.recvPacket();
+			byte[] encodedKey = snp.data;
+			KeyFactory kf = KeyFactory.getInstance("RSA");
+			X509EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(
+					encodedKey);
+			publicKey = kf.generatePublic(publicKeySpec);
+			return publicKey;
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+
+	private void sendFile(int row) {
+
+		if (!isOKtoSendtoRow(row)) {
+			return;
+		}
+
+		String myid = (String) buddyTable.getValueAt(row, 0);
+
+		FileDialog fileOpen = new FileDialog(clientFrame, "Open...",
+				FileDialog.LOAD);
+
+		fileOpen.show();
+		if (fileOpen.getFile().length() == 0)
+			return;
+
+		// set up socket on a free port
+		ServerSocket ftpSocket = null;
+		try {
+			ftpSocket = new ServerSocket(0);
+		} catch (IOException e) {
+			System.err.println("could not set up listening port");
+			msgTextBox.append("[*ERR*] FTP failed.\n");
+			return;
+		}
+
+		// send message to server with target user and listening address and
+		// port
+		String iAddr;
+		try {
+			iAddr = InetAddress.getLocalHost().toString();
+			if (iAddr.lastIndexOf("/") > 0)
+				iAddr = iAddr.substring(0, iAddr.lastIndexOf("/"));
+		} catch (UnknownHostException e) {
+			iAddr = "localhost";
+		}
+
+		// wait for user to connect, then start file transfer
+		try {
+			PublicKey otherKey = getPubKey(myid);
+
+			iAddr += ":" + Integer.toString(ftpSocket.getLocalPort());
+			stealthComms.sendPacket(StealthNetPacket.CMD_FTP, myid + "@"
+					+ iAddr + "#" + fileOpen.getFile());
+
+			Cipher otherCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+			otherCipher.init(Cipher.ENCRYPT_MODE, otherKey);
+			System.out.println("Other Key: " + otherKey);
+
+			Cipher myCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+			myCipher.init(Cipher.DECRYPT_MODE, privateKey);
+
+			ftpSocket.setSoTimeout(2000); // 2 second timeout
+			StealthNetComms snComms = new StealthNetComms(myCipher);
+			snComms.setOutCipher(otherCipher);
+			snComms.acceptSession(ftpSocket.accept());
+			new StealthNetFileTransfer(snComms, fileOpen.getDirectory()
+					+ fileOpen.getFile(), true).start();
+		} catch (Exception e) {
+			e.printStackTrace();
+			msgTextBox.append("[*ERR*] FTP failed.\n");
+		}
+	}
+
+	private void processPackets() {
+		// Update credits box, stick it here for convenience
+		creditsBox.setText(new Integer(credits).toString());
+
+		try {
+			if ((stealthComms == null) || (!stealthComms.recvReady()))
+				return;
+		} catch (IOException e) {
+			msgTextBox.append("[*ERR*] The server appears to be down.\n");
+			return;
+		}
+
+		StealthNetPacket pckt = new StealthNetPacket();
+		StealthNetComms snComms;
+		String iAddr, fName, signature;
+		Integer iPort;
+		int x;
+		PublicKey otherKey;
+		Cipher otherCipher;
+		Cipher myCipher;
+
+		stealthTimer.stop();
+
+		try {
+			// check for message from server
+			while (stealthComms.recvReady()) {
+				pckt = stealthComms.recvPacket();
+				switch (pckt.command) {
+				case StealthNetPacket.CMD_MSG:
+					msgTextBox.append(new String(pckt.data) + "\n");
+					break;
+
+				case StealthNetPacket.CMD_CHAT:
+					try {
+						iAddr = new String(pckt.data);
+						String otherID = iAddr.substring(0, iAddr.indexOf("@"));
+						iAddr = iAddr.substring(iAddr.lastIndexOf("@") + 1);
+						iPort = new Integer(iAddr.substring(iAddr
+								.lastIndexOf(":") + 1));
+						iAddr = iAddr.substring(0, iAddr.lastIndexOf(":"));
+
+						otherKey = getPubKey(otherID);
+
+						otherCipher = Cipher
+								.getInstance("RSA/ECB/PKCS1Padding");
+						otherCipher.init(Cipher.ENCRYPT_MODE, otherKey);
+
+						myCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+						myCipher.init(Cipher.DECRYPT_MODE, privateKey);
+
+						snComms = new StealthNetComms(myCipher);
+						snComms.setOutCipher(otherCipher);
+
+						snComms.initiateSession(new Socket(iAddr, iPort
+								.intValue()));
+						new jbStealthNetChat(userID, snComms).start();
+					} catch (Exception e) {
+						e.printStackTrace();
+					}
+
+					break;
+
+				case StealthNetPacket.CMD_FTP:
+					try {
+						iAddr = new String(pckt.data);
+						iAddr = iAddr.substring(iAddr.lastIndexOf("@") + 1);
+						fName = iAddr.substring(iAddr.lastIndexOf("#") + 1);
+						iAddr = iAddr.substring(0, iAddr.lastIndexOf("#"));
+						iPort = new Integer(iAddr.substring(iAddr
+								.lastIndexOf(":") + 1));
+						iAddr = iAddr.substring(0, iAddr.lastIndexOf(":"));
+
+						otherKey = waitForPubKey();
+
+						otherCipher = Cipher
+								.getInstance("RSA/ECB/PKCS1Padding");
+						otherCipher.init(Cipher.ENCRYPT_MODE, otherKey);
+
+						myCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+						myCipher.init(Cipher.DECRYPT_MODE, privateKey);
+
+						snComms = new StealthNetComms(myCipher);
+						snComms.setOutCipher(otherCipher);
+						snComms.initiateSession(new Socket(iAddr, iPort
+								.intValue()));
+
+						FileDialog fileSave = new FileDialog(clientFrame,
+								"Save As...", FileDialog.SAVE);
+						fileSave.setFile(fName);
+						fileSave.show();
+						if ((fileSave.getFile() != null)
+								&& (fileSave.getFile().length() > 0)) {
+							new StealthNetFileTransfer(snComms, fileSave
+									.getDirectory()
+									+ fileSave.getFile(), false).start();
+						}
+
+					} catch (Exception e) {
+						e.printStackTrace();
+					}
+					break;
+
+				case StealthNetPacket.CMD_LIST:
+					int indx;
+					String row;
+					String userTable = new String(pckt.data);
+					buddyListData.setRowCount(0);
+					while (userTable.length() > 0) {
+						indx = userTable.indexOf("\n");
+						if (indx > 0) {
+							row = userTable.substring(0, indx);
+							userTable = userTable.substring(indx + 1);
+						} else {
+							row = userTable;
+							userTable = "";
+						}
+						indx = row.lastIndexOf(",");
+						if (indx > 0) {
+							buddyListData.addRow(new Object[] {
+									row.substring(0, indx).trim(),
+									row.substring(indx + 1).trim() });
+						}
+					}
+
+					break;
+
+				case StealthNetPacket.CMD_SECRETLIST:
+
+					String secretTable = new String(pckt.data);
+					secretListData.setRowCount(0);
+					while (secretTable.length() > 0) {
+						indx = secretTable.indexOf("\n");
+						if (indx > 0) {
+							row = secretTable.substring(0, indx);
+							secretTable = secretTable.substring(indx + 1);
+						} else {
+							row = secretTable;
+							secretTable = "";
+						}
+
+						String values[] = row.split(";");
+						secretListData.addRow(values);
+
+						SecretData data = new SecretData();
+						data.description = values[2];
+						data.filename = values[3];
+						secretDescriptions.put(values[0], data);
+					}
+
+					break;
+
+				case StealthNetPacket.CMD_GETSECRET:
+					fName = new String(pckt.data);
+					iAddr = fName.substring(fName.lastIndexOf("@") + 1);
+					iPort = new Integer(iAddr
+							.substring(iAddr.lastIndexOf(":") + 1));
+					iAddr = iAddr.substring(0, iAddr.lastIndexOf(":"));
+					fName = fName.substring(0, fName.lastIndexOf("@"));
+					try {
+
+						otherKey = waitForPubKey();
+
+						otherCipher = Cipher
+								.getInstance("RSA/ECB/PKCS1Padding");
+						otherCipher.init(Cipher.ENCRYPT_MODE, otherKey);
+
+						myCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+						myCipher.init(Cipher.DECRYPT_MODE, privateKey);
+
+						snComms = new StealthNetComms(myCipher);
+						snComms.setOutCipher(otherCipher);
+
+						snComms.initiateSession(new Socket(iAddr, iPort
+								.intValue()));
+
+						msgTextBox.append("[INFO] Sending out a secret.\n");
+
+						new StealthNetFileTransfer(snComms, fName, true)
+								.start();
+					} catch (Exception e) {
+						e.printStackTrace();
+					}
+
+					break;
+
+				case StealthNetPacket.CMD_WITHDRAW:
+					signature = new String(pckt.data);
+					x = Integer.parseInt(signature.substring(0, signature
+							.indexOf(";")));
+					int index1 = signature.indexOf(";") + 1;
+					int index2 = signature.indexOf(";", index1);
+					int index3 = signature.indexOf(";", index2);
+
+					String dataToSign = signature.substring(index1, index2);
+					signature = signature.substring(index3 + 1);
+
+					Signature dsaVerifier = Signature.getInstance("SHA1/DSA");
+					dsaVerifier.initVerify(StealthNetServer.getDSAPublicKey());
+					dsaVerifier.update(dataToSign.getBytes(), 0, dataToSign
+							.getBytes().length);
+
+					if (dsaVerifier.verify(signature.getBytes("ISO-8859-1"))) {
+						msgTextBox.append("[INFO] Withdrew " + x
+								+ " credits from bank. \n");
+						credits += x;
+					}
+
+					break;
+				case StealthNetPacket.CMD_DEPOSIT_SN:
+					signature = new String(pckt.data);
+
+					x = Integer.parseInt(signature.substring(0, signature
+							.indexOf(";")));
+					msgTextBox.append("[INFO] Deposited " + x
+							+ " credits into StealthNet account. \n");
+					credits -= x;
+					break;
+
+				default:
+					System.out.println("unrecognised command");
+				}
+			}
+		} catch (Exception e) {
+			System.err.println("error running client thread");
+			e.printStackTrace();
+		}
+
+		stealthTimer.start();
+	}
+
+	public static void main(String[] args) {
+		try {
+			UIManager.setLookAndFeel(UIManager
+					.getCrossPlatformLookAndFeelClassName());
+		} catch (Exception e) {
+		}
+
+		// create the top-level container and contents
+		clientFrame = new JFrame("stealthnet");
+		StealthNetClient app = new StealthNetClient();
+		Component contents = app.createGUI();
+		clientFrame.getContentPane().add(contents, BorderLayout.CENTER);
+
+		// finish setting up the gui
+		clientFrame.addWindowListener(new WindowAdapter() {
+			public void windowClosing(WindowEvent e) {
+				System.exit(0);
+			}
+		});
+		clientFrame.pack();
+		clientFrame.setVisible(true);
+	}
+
+	public static void printBytes(byte[] arr) {
+		for (byte b : arr) {
+			System.out.print(b);
+		}
+		System.out.println();
+	}
+}
+
+/******************************************************************************
+ * END OF FILE: StealthNetClient.java
+ *****************************************************************************/
+

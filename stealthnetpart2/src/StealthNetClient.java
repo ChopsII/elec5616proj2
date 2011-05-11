@@ -45,6 +45,7 @@ import java.security.spec.KeySpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Hashtable;
 
 /* StealthNetClient Class Definition *****************************************/
@@ -55,7 +56,7 @@ public class StealthNetClient {
 	private JButton loginBtn;
 	private StealthNetComms stealthComms = null;
 	private javax.swing.Timer stealthTimer;
-	private String userID = null;
+	private static String userID = null;
 	private JTable buddyTable = null, secretTable = null;
 	private DefaultTableModel buddyListData = null, secretListData = null;
 	JTextField creditsBox;
@@ -70,7 +71,8 @@ public class StealthNetClient {
 
 	static private Hashtable secretDescriptions = new Hashtable();
 
-	private static KeyPair PKEKeyPair;
+	private static KeyPair PKEKeyPair;		//The client's RSA Key Pair
+	private HashMap<String, PublicKey> knownPublicKeys = new HashMap<String, PublicKey>();
 
 	public StealthNetClient() {
 		stealthTimer = new javax.swing.Timer(100, new ActionListener() {
@@ -306,7 +308,15 @@ public class StealthNetClient {
 			userID = JOptionPane.showInputDialog("Login:", userID);
 			if (userID == null)
 				return;
-			stealthComms = new StealthNetComms();
+
+			byte[] pword;
+			pword = Helpers.getPassword();
+			KeyPair myKeyPair = Helpers.readKeyFiles(userID, pword);
+			pword = Helpers.wipePword(pword);
+			
+			PublicKey serverKey = Helpers.getServerPublicKey();
+			
+			stealthComms = new StealthNetComms(myKeyPair,serverKey);
 			stealthComms.initiateSession(new Socket(StealthNetComms.SERVERNAME,
 					StealthNetComms.SERVERPORT));
 			stealthComms.sendPacket(StealthNetPacket.CMD_LOGIN, userID);
@@ -419,7 +429,7 @@ public class StealthNetClient {
 			// wait for user to connect, then start file transfer
 			try {
 				ftpSocket.setSoTimeout(2000); // 2 second timeout
-				StealthNetComms snComms = new StealthNetComms();
+				StealthNetComms snComms = new StealthNetComms(PKEKeyPair);
 				snComms.acceptSession(ftpSocket.accept());
 				new StealthNetFileTransfer(snComms, fileSave.getDirectory()
 						+ fileSave.getFile(), false).start();
@@ -483,7 +493,7 @@ public class StealthNetClient {
 		// wait for user to connect and open chat window
 		try {
 			chatSocket.setSoTimeout(2000); // 2 second timeout
-			StealthNetComms snComms = new StealthNetComms();
+			StealthNetComms snComms = new StealthNetComms(PKEKeyPair);
 			snComms.acceptSession(chatSocket.accept());
 			new StealthNetChat(userID, snComms).start();
 		} catch (Exception e) {
@@ -533,7 +543,7 @@ public class StealthNetClient {
 		// wait for user to connect, then start file transfer
 		try {
 			ftpSocket.setSoTimeout(2000); // 2 second timeout
-			StealthNetComms snComms = new StealthNetComms();
+			StealthNetComms snComms = new StealthNetComms(PKEKeyPair);
 			snComms.acceptSession(ftpSocket.accept());
 			new StealthNetFileTransfer(snComms, fileOpen.getDirectory()
 					+ fileOpen.getFile(), true).start();
@@ -576,7 +586,7 @@ public class StealthNetClient {
 					iPort = new Integer(iAddr
 							.substring(iAddr.lastIndexOf(":") + 1));
 					iAddr = iAddr.substring(0, iAddr.lastIndexOf(":"));
-					snComms = new StealthNetComms();
+					snComms = new StealthNetComms(PKEKeyPair, getOtherPubKey(iAddr));
 					snComms
 							.initiateSession(new Socket(iAddr, iPort.intValue()));
 					new StealthNetChat(userID, snComms).start();
@@ -591,7 +601,7 @@ public class StealthNetClient {
 							.substring(iAddr.lastIndexOf(":") + 1));
 					iAddr = iAddr.substring(0, iAddr.lastIndexOf(":"));
 
-					snComms = new StealthNetComms();
+					snComms = new StealthNetComms(PKEKeyPair, getOtherPubKey(iAddr));
 					snComms
 							.initiateSession(new Socket(iAddr, iPort.intValue()));
 
@@ -664,7 +674,7 @@ public class StealthNetClient {
 					iAddr = iAddr.substring(0, iAddr.lastIndexOf(":"));
 					fName = fName.substring(0, fName.lastIndexOf("@"));
 
-					snComms = new StealthNetComms();
+					snComms = new StealthNetComms(PKEKeyPair, getOtherPubKey(iAddr));
 					snComms
 							.initiateSession(new Socket(iAddr, iPort.intValue()));
 
@@ -684,6 +694,32 @@ public class StealthNetClient {
 		}
 
 		stealthTimer.start();
+	}
+
+	private PublicKey getOtherPubKey(String iAddr) {
+		String otherUser = iAddr.substring(0, iAddr.lastIndexOf('@'));
+		
+		if (!(knownPublicKeys.containsKey(otherUser))){
+			stealthComms.sendPacket(new StealthNetPacket(StealthNetPacket.CMD_GETPUBKEY,otherUser.getBytes()));
+			try {
+				StealthNetPacket resp = stealthComms.recvPacket();
+				knownPublicKeys.put(otherUser, KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(resp.data)));
+				
+			} catch (IOException e) {
+				//  Auto-generated catch block
+				e.printStackTrace();
+				System.exit(1);
+			} catch (InvalidKeySpecException e) {
+				//  Auto-generated catch block
+				e.printStackTrace();
+				System.exit(1);
+			} catch (NoSuchAlgorithmException e) {
+				//  Auto-generated catch block
+				e.printStackTrace();
+				System.exit(1);
+			}
+		}
+		return knownPublicKeys.get(otherUser);
 	}
 
 	public static void main(String[] args) {
@@ -707,193 +743,16 @@ public class StealthNetClient {
 		clientFrame.pack();
 		clientFrame.setVisible(true);
 
-		/* TODO Refactor this so it's per user.
-		 * this means i need to do it when they're trying to log in.
-		 * The user name needs to be appended to the key file names somehow.
-		 * Is it ok for the username to be in plain text on their private key file name?
-		 * 
-		 * Also it obviously needs to take the username as an argument
-		 */
-		readKeyFiles();
+
 
 	}
 
-	private static void readKeyFiles() {
-		
-		addMsg("Checking existence of key files\n");
-		
-		// Check and see if there is already a keypair on this machine
-		File priKF = new File("pri.key");
-		File pubKF = new File("pub.key");
-		try {
-			//Open private key file and decrypt it
-			FileInputStream priKFIS = new FileInputStream(priKF);
-			FileInputStream pubKFIS = new FileInputStream(pubKF);
-			addMsg("Key files found\n");
-			addMsg("Opening private key file for decryption\n");
-			byte[] encryptedPriK = new byte[(int) priKF.length()];
-			priKFIS.read(encryptedPriK);
-			priKFIS.close();
-			PrivateKey priK = decryptPriKeyBytes(encryptedPriK);
-
-			//open public key file & read
-			addMsg("Reading public key file\n");
-			byte[] pubKBytes = new byte[(int)pubKF.length()];
-			pubKFIS.read(pubKBytes);
-			pubKFIS.close();
-			PublicKey pubK = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(pubKBytes));
-			
-						
-			//create a KeyPair based on the two keys
-			PKEKeyPair = new KeyPair(pubK, priK);
-			
-
-		} catch (FileNotFoundException e) {
-			// file does not exist
-			addMsg("Key file not found\n");
-
-			// generate keypair,
-			addMsg("Generating new keys\n");
-			PKEKeyPair = generateNewKeyPair();
-
-			byte[] keyBytes = Helpers.concatByteArray(PKEKeyPair.getPublic()
-					.getEncoded(), PKEKeyPair.getPrivate().getEncoded());
-
-			String pword = "";
-			pword = JOptionPane.showInputDialog("Please enter a password:");
-
-			// generate key from password
-			addMsg("Generating key from password\n");
-			SecretKey keyFileKey = Helpers.generateKey(pword.getBytes());
-
-			// generate MAC
-			addMsg("Generating HMAC\n");
-			byte[] hmac = Helpers.generateHMAC(keyFileKey, keyBytes);
-
-			byte[] toWrite = Helpers.concatByteArray(keyBytes, hmac);
-
-			// encrypt PKEKeyPair & MAC
-			addMsg("Encrypting keyfile\n");
-			toWrite = Helpers.encrypt(keyFileKey, toWrite);
-
-			try {
-				
-
-				// Write encrypted PKEKeyPair & MAC to disk
-				addMsg("Writing to disk\n");
-				FileOutputStream prikFOS = new FileOutputStream(priKF);
-				prikFOS.write(toWrite);
-				prikFOS.close();
-
-				addMsg("Done\n");
-				
-				
-			} catch (FileNotFoundException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-				System.exit(1);
-			} catch (IOException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-				System.exit(1);
-			}
-			
-
-		} catch (IOException e) {
-			System.err.println("Key pair file reading failed:");
-			e.printStackTrace();
-			System.exit(1);
-		} catch (InvalidKeySpecException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-			System.exit(1);
-		} catch (NoSuchAlgorithmException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-			System.exit(1);
-		}
-
-	}
-
-	/**
-	 * Function to generate the RSA keypair. 2048 bit is used, as 1024 is broken
-	 * 
-	 * @return the KeyPair
-	 */
-	private static KeyPair generateNewKeyPair() {
-		KeyPairGenerator keyPairGenerator;
-		try {
-			keyPairGenerator = KeyPairGenerator.getInstance("RSA");
-			keyPairGenerator.initialize(2048);
-			return keyPairGenerator.genKeyPair();
-		} catch (NoSuchAlgorithmException e) {
-			e.printStackTrace();
-			System.exit(1);
-		}
-		return null;
-	}
-
-	private static PrivateKey decryptPriKeyBytes (byte[] encryptedKeyPair) {
-		boolean valid = false;
-		byte[] incomingHMAC;
-		byte[] incomingPriK;
-		String pword;
-		//TODO make sure they have userID set, if they do, use that.
-		
-		while (!valid) {
-			//ask for password
-			pword = JOptionPane.showInputDialog("Please enter the password:");
-			
-			//recreate the key from the password
-			SecretKey key = Helpers.generateKey(pword.getBytes());
-			
-			//Decrypt the private key bytes
-			byte[] decryptedBytes = Helpers.decrypt(key, encryptedKeyPair);
-			
-			//Separate incoming bytes into HMAC and Private Key
-			incomingHMAC = new byte[16];
-			System.arraycopy(decryptedBytes, decryptedBytes.length - 16,
-					incomingHMAC, 0, 16);
-			incomingPriK = new byte[decryptedBytes.length - 16];
-			System.arraycopy(decryptedBytes, 0, incomingPriK, 0,
-					incomingPriK.length);
-			
-			//check the HMAC
-			if (!Helpers.CheckHMAC(incomingHMAC, key, incomingPriK)){
-				continue;
-			}else{
-				valid = true;
-			}
-			
-			
-			try {
-				//Create key from keyspec encoded bytes and return it
-				return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(incomingPriK));
-				
-			} catch (InvalidKeySpecException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-				System.exit(1);
-			} catch (NoSuchAlgorithmException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-				System.exit(1);
-			}
-		}
-		
-
-		
-		
-		
-		return null;
-	}
-	
 	/**
 	 * Little function to add message to the message box and then move the caret,
 	 * as I was not able to make it scroll automatically.
 	 * @param msg
 	 */
-	private static void addMsg(String msg){
+	static void addMsg(String msg){
 		msgTextBox.append(msg);
 		msgTextBox.setCaretPosition(msgTextBox.getDocument().getLength());
 	}

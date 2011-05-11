@@ -22,6 +22,8 @@
 
 import java.io.*;
 import java.net.*;
+import java.security.KeyPair;
+import java.security.PublicKey;
 import java.util.*;
 
 /* StealthNetServerThread Class Definition ***********************************/
@@ -42,13 +44,15 @@ public class StealthNetServerThread extends Thread {
 
     static private Hashtable userList = new Hashtable();
     static private Hashtable secretList = new Hashtable();
+    static private HashMap<String, PublicKey> knownUserPubKeys = new HashMap<String, PublicKey>();
+    
     
     private String userID = null;
     private StealthNetComms stealthComms = null;
 
-    public StealthNetServerThread(Socket socket) {
+    public StealthNetServerThread(Socket socket, KeyPair serverKeyPair) {
         super("StealthNetServerThread");
-        stealthComms = new StealthNetComms();
+        stealthComms = new StealthNetComms(serverKeyPair);
         stealthComms.acceptSession(socket);
     }
 
@@ -195,6 +199,20 @@ public class StealthNetServerThread extends Thread {
                         pckt.command = StealthNetPacket.CMD_LOGOUT;
                         userID = null;
                     } else {
+                    	// check the user's public key
+                    	if (knownUserPubKeys.containsKey(userID)){
+                    		if (!Arrays.equals(stealthComms.theirPubKey.getEncoded(), knownUserPubKeys.get(userID).getEncoded())){
+                    			System.out.println("User \""+userID+"\" tried to log in with a different public key to their last known");
+                    			userID = null;
+                    			pckt.command = StealthNetPacket.CMD_LOGOUT;
+                    		}
+                    		System.out.println("Public key matches last know for the user");
+                    	} else{
+                    		System.out.println("System has no previous record of the user; registering...");
+                    		knownUserPubKeys.put(userID, stealthComms.theirPubKey);
+                    	}
+                        
+                    	
                         System.out.println("user \"" + userID + "\" has logged in");
                         sendUserList();
 	                    sendSecretList();
@@ -335,6 +353,22 @@ public class StealthNetServerThread extends Thread {
 					}
 
 					break;
+				
+				case StealthNetPacket.CMD_GETPUBKEY :
+					if (userID == null) {
+						System.out.println("unknown user trying to communicate");
+						break;
+					}
+					//Check user exists, then send the public key back
+					if (knownUserPubKeys.containsKey((new String(pckt.data)))){
+						stealthComms.sendPacket(StealthNetPacket.CMD_GETPUBKEY,knownUserPubKeys.get(new String(pckt.data)).getEncoded());
+					}
+					else{
+//						This should never happen
+//						stealthComms.sendPacket(StealthNetPacket.CMD_GETPUBKEY, new String().getBytes());
+					}
+					break;
+					
 
                 default :
                     System.out.println("unrecognised command");
@@ -356,6 +390,21 @@ public class StealthNetServerThread extends Thread {
             stealthComms = null;
         }
     }
+
+	private boolean checkPubKey() {
+		if (knownUserPubKeys.containsKey(userID)){
+			if(Arrays.equals(knownUserPubKeys.get(userID).getEncoded(), stealthComms.theirPubKey.getEncoded())){
+				return true;
+			} else{
+				System.out.println("User ("+userID+") trying to log in with incorrect public key\n");
+				return false;
+			}
+		}else {
+			System.out.println("New user ("+userID+") logging in\n");
+			knownUserPubKeys.put(userID, stealthComms.theirPubKey);
+			return true;
+		}
+	}
 }
 
 /******************************************************************************

@@ -22,15 +22,18 @@
 
 import java.io.*;
 import java.net.*;
+import java.security.KeyPair;
+import java.security.PublicKey;
+import java.util.HashMap;
 
 /* StealthNetServer Class Definition *****************************************/
 
 public class StealthNetServer {
+    
     public static void main(String[] args) throws IOException {
     	
-    	//TODO if server has private key on file, load it
-    	//TODO else generate it and store it
-    	//TODO load users' public keys
+    	KeyPair serverKeyPair = Helpers.readKeyFiles("server", "ServerPassword".getBytes());
+    	
     	
         ServerSocket svrSocket = null;
         try {
@@ -42,7 +45,7 @@ public class StealthNetServer {
 
         System.out.println("Server online...");
         while (true) {
-            new StealthNetServerThread(svrSocket.accept()).start();
+            new StealthNetServerThread(svrSocket.accept(), serverKeyPair).start();
             System.out.println("Server accepted connection...");
         }
     }

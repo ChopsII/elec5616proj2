@@ -32,6 +32,7 @@ public class StealthNetPacket {
     public static final byte CMD_KEYEXCHANGE = 0x0A;		//Added keyexchange mode so that we know not to encrypt it
     public static final byte CMD_ENCRYPTED = 0x0B;			//Added encrypted mode so we can move the commands to the encrypted message
     public static final byte CMD_BADPACKET = 0x0C;			//Added bad packet so that we can pass the info back to the calling code
+    public static final byte CMD_GETPUBKEY = 0x0D;			//Added packet type to request public key
    
     
     private static final char[] HEXTABLE =

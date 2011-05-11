@@ -34,15 +34,18 @@ import java.security.AlgorithmParameterGenerator;
 import java.security.AlgorithmParameters;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
+import java.security.Key;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.InvalidParameterSpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 
@@ -53,6 +56,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.interfaces.DHPublicKey;
 import javax.crypto.spec.DHParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import javax.swing.JOptionPane;
 
 /* StealthNetComms class *****************************************************/
 
@@ -66,11 +70,25 @@ public class StealthNetComms {
 
 	private SecretKey sharedSecretKey; // Blowfish key based on DH shared secret
 
+	KeyPair myPKEKeyPair;	//The RSA keypair for this comm channel
+	PublicKey theirPubKey;	//The other party's RSA public key
+
 	private SecureRandom myRandom; // PRNG for nonces sent
 	private SecureRandom theirRandom; // PRNG for nonces received
 	private byte[] theirCurrentNonce; // The current nonce expected
 
-	public StealthNetComms() {
+	public StealthNetComms(KeyPair myKeyPair, PublicKey othersPublicKey) {
+		myPKEKeyPair = myKeyPair;
+		theirPubKey = othersPublicKey;
+		initStealthNetComms();
+	}
+
+	public StealthNetComms(KeyPair PKEKeyPair) {
+		myPKEKeyPair = PKEKeyPair;
+		initStealthNetComms();
+	}
+	
+	private void initStealthNetComms(){
 		commsSocket = null;
 		dataIn = null;
 		dataOut = null;
@@ -186,6 +204,16 @@ public class StealthNetComms {
 
 			// do the key exchange from the acceptors point of view
 			doKeyExchangeBob();
+			/*TODO need to make sure sender's public key is valid:
+			 * As server: check against known
+			 * 	-if known and ok then fine
+			 * 	-if user known and not ok then reject
+			 * 	-if user not known then ok and save
+			 * As client: ask server
+			 * 	-if server says all good known then fine
+			 * 	-if server says known but wrong, reject
+			 *  -if server says unknown then server should add it and then say ok, or new
+			 */
 
 		} catch (Exception e) {
 			System.err.println("Connection terminated.");
@@ -339,10 +367,11 @@ public class StealthNetComms {
 	public boolean sendPacket(StealthNetPacket pckt) {
 		if (dataOut == null)
 			return false;
-		if (pckt.command == StealthNetPacket.CMD_KEYEXCHANGE)
-			//TODO encrypt the packet with public key encryption
+		if (pckt.command == StealthNetPacket.CMD_KEYEXCHANGE){
+			//encrypt the packet with public key encryption
+			pckt.data = encryptWithRSA(pckt.data);
 			dataOut.println(pckt.toString());
-		else {
+		}else {
 			//move the command bit into the data, set command bit to encrypted packet
 			pckt.data = Helpers.concatByteArray(new byte[]{pckt.command}, pckt.data);
 			pckt.command = StealthNetPacket.CMD_ENCRYPTED;
@@ -380,7 +409,6 @@ public class StealthNetComms {
 
 		try {
 			
-			//TODO move this to the helpers one
 			
 			// create new HMAC-MD5
 			Mac mac = Mac.getInstance("HmacMD5");
@@ -418,13 +446,21 @@ public class StealthNetComms {
 			//get the command back out of the message
 			pckt = extractCommand(pckt);
 		} else {
-			//TODO decrypt with private key
+			pckt.data = decryptWithRSA(pckt.data);
+			checkSenderPubKey();
 		}
 
 		// System.out.println(pckt.data);
 		return pckt;
 	}
 	
+	private void checkSenderPubKey() {
+		// TODO Make sure we have a public key for the sender
+		// TODO make sure the server agrees with the one we have???
+		
+		
+	}
+
 	/**
 	 * Removes the first bit and sets the packet's command to it
 	 * @param pckt
@@ -508,6 +544,48 @@ public class StealthNetComms {
 		 */
 		return dataIn.ready();
 	}
+
+	 public  byte[] encryptWithRSA(byte[] data) {
+		byte[] encrypted = null;
+		if (theirPubKey == null){
+			System.out.println("null recipient key");
+			System.exit(1);
+		}
+		
+		
+		try {
+			// Initialise cipher
+			Cipher cipher = Cipher.getInstance("RSA");
+			cipher.init(Cipher.ENCRYPT_MODE, theirPubKey);
+			// Run cipher
+			encrypted = cipher.doFinal(data);
+		} catch (Exception e) {
+			// This shouldn't happen
+			e.printStackTrace();
+			System.err.println("Unable to encrypt");
+			System.exit(1);
+		}
+		return encrypted;
+	}
+
+	public  byte[] decryptWithRSA(byte[] data) {
+		byte[] decrypted = null;
+		try {
+			// Initialise cipher
+			Cipher cipher = Cipher.getInstance("RSA");
+			cipher.init(Cipher.DECRYPT_MODE, myPKEKeyPair.getPrivate());
+			// decrypt
+			decrypted = cipher.doFinal(data);
+		} catch (Exception e) {
+			// This should never happen
+			e.printStackTrace();
+			System.err.println("Unable to decrypt");
+			System.exit(1);
+		}
+		return decrypted;
+	}
+
+	
 }
 
 /******************************************************************************

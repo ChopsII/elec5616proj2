@@ -1,0 +1,387 @@
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.security.InvalidKeyException;
+import java.security.Key;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Arrays;
+
+import javax.crypto.Cipher;
+import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPasswordField;
+
+/**
+ * A Class containing a bunch of static methods to help reduce code duplication
+ * among various classes
+ * 
+ * @author Lynden Shields & Abdulrahman Almassan
+ * 
+ */
+public class Helpers {
+
+	static PublicKey getServerPublicKey() {
+		// TODO write the function...
+
+		return null;
+	}
+
+	/**
+	 * Function written to concatenate two byte arrays into a new array
+	 * 
+	 * @param arr1
+	 * @param arr2
+	 * @return new array of the size of the two input arrays with the data of
+	 *         the first then the data of the second
+	 */
+	static byte[] concatByteArray(byte[] arr1, byte[] arr2) {
+		byte[] toReturn = new byte[arr1.length + arr2.length];
+		System.arraycopy(arr1, 0, toReturn, 0, arr1.length);
+		System.arraycopy(arr2, 0, toReturn, arr1.length, arr2.length);
+
+		return toReturn;
+	}
+
+	/**
+	 * Function created for debugging purposes. Just creates a string of int
+	 * values from a byte array
+	 * 
+	 * @param arr
+	 * @return string of int values separated by comma
+	 */
+	static String printBytes(byte[] arr) {
+		String toReturn = new String();
+		for (int i = 0; i < arr.length; i++) {
+			toReturn += "" + (int) arr[i] + ",";
+		}
+		return toReturn;
+	}
+
+	/**
+	 * Simply calls the helper method I wrote for the client.
+	 * 
+	 * @param string
+	 */
+	private static void addMsg(String string) {
+		try {
+			StealthNetClient.addMsg(string);
+		} catch (NullPointerException e) {
+			System.out.print(string);
+		}
+	}
+
+	/**
+	 * Function to generate the RSA keypair. 2048 bit is used, as 1024 is broken
+	 * 
+	 * @return the KeyPair
+	 */
+	static KeyPair generateNewKeyPair() {
+		KeyPairGenerator keyPairGenerator;
+		try {
+			keyPairGenerator = KeyPairGenerator.getInstance("RSA");
+			keyPairGenerator.initialize(2048);
+			return keyPairGenerator.genKeyPair();
+		} catch (NoSuchAlgorithmException e) {
+			e.printStackTrace();
+			System.exit(1);
+		}
+		return null;
+	}
+
+	static PrivateKey decryptPriKeyBytes(byte[] encryptedKeyPair, SecretKey key) {
+		boolean valid = false;
+		byte[] incomingHMAC;
+		byte[] incomingPriK;
+		String pword;
+
+		while (!valid) {
+
+
+			// Decrypt the private key bytes
+			byte[] decryptedBytes = decrypt(key, encryptedKeyPair);
+
+			// Separate incoming bytes into HMAC and Private Key
+			incomingHMAC = new byte[16];
+			System.arraycopy(decryptedBytes, decryptedBytes.length - 16,
+					incomingHMAC, 0, 16);
+			incomingPriK = new byte[decryptedBytes.length - 16];
+			System.arraycopy(decryptedBytes, 0, incomingPriK, 0,
+					incomingPriK.length);
+
+			// check the HMAC
+			if (!CheckHMAC(incomingHMAC, key, incomingPriK)) {
+				continue;
+			} else {
+				valid = true;
+			}
+
+			try {
+				// Create key from keyspec encoded bytes and return it
+				return KeyFactory.getInstance("RSA").generatePrivate(
+						new PKCS8EncodedKeySpec(incomingPriK));
+
+			} catch (InvalidKeySpecException e) {
+				// Auto-generated catch block
+				e.printStackTrace();
+				System.exit(1);
+			} catch (NoSuchAlgorithmException e) {
+				// Auto-generated catch block
+				e.printStackTrace();
+				System.exit(1);
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * This function generates a Blowfish SecretKey based on MD5 hashing the
+	 * secret
+	 * 
+	 * @param secret
+	 *            The secret to use as basis for key
+	 * @return The secret key to use for encryption etc
+	 */
+	static SecretKey generateKey(byte[] secret) {
+		SecretKey key = null;
+		try {
+			// hash shared secret, generate Blowfish key from that.
+			MessageDigest md = MessageDigest.getInstance("MD5");
+			key = new SecretKeySpec(md.digest(secret), "Blowfish");
+		} catch (NoSuchAlgorithmException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		}
+
+		return key;
+	}
+
+	/**
+	 * Function to decrypt data using Blowfish algorithm
+	 * 
+	 * @param data
+	 * @param key
+	 * @return decrypted packet data
+	 */
+	static byte[] decrypt(Key key, byte[] data) {
+		byte[] decrypted = null;
+		try {
+			// Initialise cipher
+			Cipher cipher = Cipher.getInstance("Blowfish");
+			cipher.init(Cipher.DECRYPT_MODE, key);
+			// decrypt
+			decrypted = cipher.doFinal(data);
+		} catch (Exception e) {
+			// This should never happen
+			e.printStackTrace();
+			System.err.println("Unable to decrypt");
+			System.exit(1);
+		}
+		return decrypted;
+	}
+
+	static boolean CheckHMAC(byte[] incomingHMAC, Key key, byte[] message) {
+
+		try {
+			// Initialise the HMAC-MD5 generator
+			Mac mac = Mac.getInstance("HmacMD5");
+			mac.init(key);
+
+			// Generate new HMAC from the incoming message and check if it
+			// equals the incoming HMAC
+			if (Arrays.equals(mac.doFinal(message), incomingHMAC)) {
+				return true;
+			}
+		} catch (InvalidKeyException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+		} catch (NoSuchAlgorithmException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+		} catch (IllegalStateException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+		}
+
+		return false;
+	}
+
+	static byte[] generateHMAC(Key key, byte[] bytes) {
+		try {
+			Mac mac = Mac.getInstance("HmacMD5");
+			mac.init(key);
+			return mac.doFinal(bytes);
+		} catch (InvalidKeyException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		} catch (NoSuchAlgorithmException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		} catch (IllegalStateException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		}
+		return null;
+	}
+
+	/**
+	 * Function to encrypt data using Blowfish
+	 * 
+	 * @param data
+	 * @param sharedSecretKey
+	 * @return encrypted message
+	 */
+	static byte[] encrypt(Key key, byte[] data) {
+		byte[] encrypted = null;
+
+		try {
+			// Initialise cipher
+			Cipher cipher = Cipher.getInstance("Blowfish");
+			cipher.init(Cipher.ENCRYPT_MODE, key);
+			// Run cipher
+			encrypted = cipher.doFinal(data);
+		} catch (Exception e) {
+			// This shouldn't happen
+			e.printStackTrace();
+			System.err.println("Unable to encrypt");
+			System.exit(1);
+		}
+
+		return encrypted;
+	}
+
+	public static KeyPair readdKeyFiles(String userID, byte[] pword) {
+
+		addMsg("Checking existence of key files\n");
+
+		// Check and see if there is already a keypair on this machine
+		File priKF = new File(userID + "_pri");
+		File pubKF = new File(userID + "_pub");
+		KeyPair PKEKeyPair = null;
+		try {
+			// Check for both files
+			FileInputStream priKFIS = new FileInputStream(priKF);
+			FileInputStream pubKFIS = new FileInputStream(pubKF);
+			addMsg("Key files found\n");
+
+			// Open private key file and decrypt it
+			addMsg("Opening private key file for decryption\n");
+			byte[] encryptedPriK = new byte[(int) priKF.length()];
+			priKFIS.read(encryptedPriK);
+			priKFIS.close();
+
+			// recreate the key from the password
+			SecretKey key = generateKey(pword);
+			PrivateKey priK = decryptPriKeyBytes(encryptedPriK,key);
+
+			// open public key file & read
+			addMsg("Reading public key file\n");
+			byte[] pubKBytes = new byte[(int) pubKF.length()];
+			pubKFIS.read(pubKBytes);
+			pubKFIS.close();
+			PublicKey pubK = KeyFactory.getInstance("RSA").generatePublic(
+					new X509EncodedKeySpec(pubKBytes));
+
+			// create a KeyPair based on the two keys
+			PKEKeyPair = new KeyPair(pubK, priK);
+			addMsg("Successfully loaded keys\n");
+
+		} catch (FileNotFoundException e) {
+			// file does not exist
+			addMsg("Key file not found\n");
+
+			// generate keypair,
+			addMsg("Generating new keys\n");
+			PKEKeyPair = Helpers.generateNewKeyPair();
+
+			byte[] priKBytes = PKEKeyPair.getPrivate().getEncoded();
+
+
+			// generate key from password
+			addMsg("Generating key from password\n");
+			SecretKey keyFileKey = Helpers.generateKey(pword);
+
+			// generate MAC
+			addMsg("Generating HMAC\n");
+			byte[] hmac = Helpers.generateHMAC(keyFileKey, priKBytes);
+
+			byte[] toWrite = Helpers.concatByteArray(priKBytes, hmac);
+
+			// encrypt PKEKeyPair & MAC
+			addMsg("Encrypting keyfile\n");
+			toWrite = Helpers.encrypt(keyFileKey, toWrite);
+
+			try {
+
+				// Write encrypted PKEKeyPair & MAC to disk
+				addMsg("Writing keys to disk\n");
+				FileOutputStream priKFOS = new FileOutputStream(priKF);
+				priKFOS.write(toWrite);
+				priKFOS.close();
+
+				FileOutputStream pubKFOS = new FileOutputStream(pubKF);
+				pubKFOS.write(PKEKeyPair.getPublic().getEncoded());
+				pubKFOS.close();
+
+				addMsg("Done\n");
+
+			} catch (FileNotFoundException e1) {
+				// Auto-generated catch block
+				e1.printStackTrace();
+				System.exit(1);
+			} catch (IOException e1) {
+				// Auto-generated catch block
+				e1.printStackTrace();
+				System.exit(1);
+			}
+
+		} catch (IOException e) {
+			System.err.println("Key pair file reading failed:");
+			e.printStackTrace();
+			System.exit(1);
+		} catch (InvalidKeySpecException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		} catch (NoSuchAlgorithmException e) {
+			// Auto-generated catch block
+			e.printStackTrace();
+			System.exit(1);
+		}
+		return PKEKeyPair;
+
+	}
+
+	static byte[] getPassword() {
+		JLabel label = new JLabel("Please enter your password:");
+		JPasswordField jpf = new JPasswordField();
+		JOptionPane.showConfirmDialog(null, new Object[] { label, jpf },
+				"Password:", JOptionPane.OK_CANCEL_OPTION);
+		return jpf.getPassword().toString().getBytes();
+	}
+
+	public static void wipePword(byte[] pword) {
+		// TODO Auto-generated method stub
+		
+	}
+
+}
